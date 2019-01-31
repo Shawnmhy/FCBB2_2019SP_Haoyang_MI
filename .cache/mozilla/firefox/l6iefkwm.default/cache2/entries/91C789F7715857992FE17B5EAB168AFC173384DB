@@ -1,0 +1,272 @@
+<html>
+    <head>
+    <!--[if (gte IE 9) ]>
+            <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <![endif]-->
+    <title>Dropbox</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src https: 'unsafe-inline' 'unsafe-eval'; ">
+    </head>
+<body>
+<script>
+    (function(){
+        // Enable debugging via localStorage.
+        var debug_enabled = false;
+        if (window.localStorage && window.localStorage.getItem('marketing_tracker_debug')) {
+            debug_enabled = true;
+        }
+
+        /**
+         * Grab referrer from query params and attempt to set on document. If we have a correct
+         * referrer reference then setup the trackers, otherwise, we need to reload.
+         */
+        var ref_match = RegExp('[?&]referrer=([^&]*)').exec(window.location.search);
+        var fakeref = ref_match ? decodeURIComponent(ref_match[1]) : "";
+        try {
+            if ('Object' in window && 'defineProperty' in Object){
+                Object.defineProperty(document,'referrer',{'get':function(){ return fakeref;}});
+            } else {
+                window.document.__defineGetter__('referrer', function () { return fakeref;});
+            }
+        } catch(e){}
+
+        // If we couldn't override the referrer, then replace the location and reload.
+        if (document.referrer !== fakeref && document.referrer !== "") {
+            location.replace(location.href);
+        } else {
+            setupTrackers();
+        }
+
+        /**
+         * Listens for postMessages and sets up the trackers.
+         */
+        function setupTrackers () {
+            // GTM dataLayer and status.
+            window.dataLayer = [];
+            window.gtmAdded = false;
+
+            // Tealium event queue and interval.
+            window.tealiumQueue = [];
+            window.tealiumWaitingForGTM = false;
+            window.tealiumLoading = false;
+
+            // Debug log our build 'version'.
+            debug('Version', '2018-09-25 16:55:44.766213');
+
+            // Listen for messages from marketing_tracker.ts.
+            window.addEventListener('message', function(event){
+                debug('postMessage received', event);
+
+                var isTrustedOrigin = (
+                    event.origin.match(new RegExp('^https://www\.dropbox\.com$')) ||
+                    event.origin.match(new RegExp('^https://paper\.dropbox\.com$'))
+                );
+
+                if (isTrustedOrigin) {
+                    var dataLayer = event.data || {};
+                    var config = {};
+
+                    // If config was passed through, strip it from the dataLayer.
+                    if (dataLayer._config) {
+                        config = dataLayer._config;
+                        delete dataLayer._config;
+                    }
+
+                    // Debug log the dataLayer and config.
+                    debug('Config', config);
+                    debug('dataLayer', dataLayer);
+
+                    // Let each tag manager handle the event.
+                    handleGoogleTagManager(deepClone(dataLayer), config);
+                    handleTealium(deepClone(dataLayer), config);
+                } else {
+                    debug('Untrusted origin, no trackers activated');
+                }
+            });
+        }
+
+        /**
+         * Load Google Tag Manager and push data to it.
+         */
+        function handleGoogleTagManager (dataLayer, config) {
+            var gtm_disabled = config.gtm_disabled !== undefined ? config.gtm_disabled : false;
+            var gtm_id = config.gtm_id || 'GTM-K8WT2R';
+
+            // If GTM is disabled, bail out.
+            if (gtm_disabled) {
+                return;
+            }
+
+            // Push data to gtm and load if needed.
+            window.dataLayer.push(dataLayer);
+            debug('GTM - dataLayer.push()');
+            if (!window.gtmAdded) {
+                window.gtmAdded = true;
+                debug('GTM - loading script');
+                (function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+                new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+                j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+                '//www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+                })(window,document,'script','dataLayer',gtm_id);
+            }
+        }
+
+        /**
+         * Load Tealium and push data to it. Since Tealium doesn't queue data the same way that
+         * GTM does, we need to setup our own queue and process it after Tealium's API
+         * has finished loading.
+         *
+         * During migration from GTM to Tealium, we are relying on a global variable set by
+         * a custom GTM tag to inform Tealium which tags are ready to be enabled (so that
+         * we don't double fire any tags, which would throw off revenue metrics). In order
+         * for this to work, we MUST load Tealium after GTM has fully loaded and the custom
+         * global variable has been set on the page.
+         */
+        function handleTealium (dataLayer, config) {
+            var gtm_disabled = config.gtm_disabled !== undefined ? config.gtm_disabled : false;
+            var tealium_enabled = config.tealium_enabled !== undefined ? config.tealium_enabled : false;
+
+            // If Tealium is not enabled, bail out.
+            if (!tealium_enabled) {
+                return;
+            }
+
+            // If we're already waiting for GTM, just queue the event.
+            if (window.tealiumWaitingForGTM) {
+                debug('Tealium - adding data to queue');
+                window.tealiumQueue.push(dataLayer);
+                return;
+            }
+
+            // If GTM is disabled or it has fully loaded just process the event.
+            if (gtm_disabled || !!window.gtm_tlm) {
+                processTealiumEvent(dataLayer, config);
+                return;
+            }
+
+            // Wait for GTM to be loaded, then process the event (and the queue).
+            window.tealiumWaitingForGTM = true;
+            debug('Tealium - waiting for window.gtm_ltm');
+            onPropertySet(window, 'gtm_tlm', function (retry) {
+                debug('Tealium - found window.gtm_ltm', window.gtm_tlm);
+                window.tealiumWaitingForGTM = false;
+                processTealiumEvent(dataLayer, config);
+            })
+        }
+
+        /**
+         * Process Tealium event according to the current loading state:
+         *
+         *   - If not yet loaded, set dataLayer and load the Tealium script .
+         *   - If still loading, queue the event.
+         *   - If done loading, trigger the event with utag.link().
+         */
+        function processTealiumEvent (dataLayer, config) {
+            var tealium_profile = config.tealium_profile || 'main';
+            var tealium_env = config.tealium_env || 'prod';
+
+            // If Tealium has already loaded, fire off a utag.link() event instead of setting up
+            // the initial pageview data.
+            if (window.utag) {
+                debug('Tealium - utag.link()');
+                window.utag.link(dataLayer);
+                return;
+            }
+
+            // If we're already in the process of loading Tealium, add this event to the queue.
+            if (window.tealiumLoading) {
+                debug('Tealium - adding data to queue');
+                window.tealiumQueue.push(dataLayer);
+                return;
+            }
+
+            // Setup the Tealium data layer and start loading it.
+            debug('Tealium - setting utag_data and loading script');
+            window.tealiumLoading = true;
+            window.utag_data = dataLayer;
+            (function(a,b,c,d){
+                a='//tags.tiqcdn.com/utag/dropbox/'+ tealium_profile + '/' + tealium_env + '/utag.js';
+                b=document;c='script';d=b.createElement(c);d.src=a;d.type='text/java'+c;d.async=true;
+                a=b.getElementsByTagName(c)[0];a.parentNode.insertBefore(d,a);
+            })();
+
+            // Wait until Tealium is loaded, then drain the queue.
+            debug('Tealium - waiting for window.utag');
+            onPropertySet(window, 'utag', function () {
+                debug('Tealium - found window.utag');
+                window.tealiumLoading = false;
+                window.tealiumQueue.forEach(function (item) {
+                    debug('Tealium - utag.link() for queued item', item);
+                    window.utag.link(item);
+                });
+                window.tealiumQueue = [];
+            });
+        }
+
+        /**
+         * Helper to wait until an object property is set for the first time.
+         */
+        function onPropertySet(obj, prop, cb) {
+            Object.defineProperty(obj, prop, {
+                configurable: true,
+                enumerable: true,
+                writeable: true,
+                get: function () {
+                    return undefined;
+                },
+                set: function (val) {
+                    Object.defineProperty(obj, prop, {
+                        value: val,
+                        enumerable: true,
+                        writeable: true
+                    });
+                    cb();
+                }
+            });
+        }
+
+        /**
+         * Helper to do 'debug' logging (only visible if you are showing 'verbose' console logs).
+         */
+        function debug (msg, data) {
+            if (console.debug && debug_enabled) {
+                if (data) {
+                    console.debug('Marketing Tracker: ' + msg, data);
+                } else {
+                    console.debug('Marketing Tracker: ' + msg);
+                }
+            }
+        }
+
+        /**
+         * Helper to deep clone a simple object (for dataLayer).
+         */
+        function deepClone (obj) {
+            return JSON.parse(JSON.stringify(obj));
+        }
+    })();
+</script>
+</body>
+</html>
+«µîøXÍ      \R:¾\R:Æ?ýÿà\ZüÒ   Î    :https://marketing.dropbox.com/business/landing-t61fl?_ad=278282541815%7C1t1%7Cc&_camp=&_kw=dropbox%7Ce&gclid=EAIaIQobChMI36nn3_OW4AIVg-DICh127QuuEAAYASAAEgIn3vD_BwE&referrer=https%3A%2F%2Fwww.google.com%2F necko:classified 1 strongly-framed 1 security-info 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 request-method GET response-head HTTP/1.1 200 OK
+Content-Type: text/html
+Content-Length: 9956
+Last-Modified: Tue, 25 Sep 2018 17:05:31 GMT
+Server: AmazonS3
+Date: Wed, 30 Jan 2019 17:16:45 GMT
+ETag: "3f540111bd415d50843d4dba692c1bbc"
+Age: 30828
+X-Cache: Error from cloudfront
+Via: 1.1 de6760156d781e28f72545a2e9243b26.cloudfront.net (CloudFront)
+X-Amz-Cf-Id: i96S5HLKCJAlzMnYR85vitIMpd8S25RCc9tnP-eqTlyH4MizMp0iCQ==
+ original-response-headers Content-Type: text/html
+Content-Length: 9956
+Connection: keep-alive
+Last-Modified: Tue, 25 Sep 2018 17:05:31 GMT
+Server: AmazonS3
+Date: Wed, 30 Jan 2019 17:16:45 GMT
+ETag: "3f540111bd415d50843d4dba692c1bbc"
+Age: 30828
+X-Cache: Error from cloudfront
+Via: 1.1 de6760156d781e28f72545a2e9243b26.cloudfront.net (CloudFront)
+X-Amz-Cf-Id: i96S5HLKCJAlzMnYR85vitIMpd8S25RCc9tnP-eqTlyH4MizMp0iCQ==
+ uncompressed-len 0 net-response-time-onstart 294 net-response-time-onstop 296 predictor::resource-count 53 predictor::https://www.googletagmanager.com/gtm.js?id=GTM-K8WT2R 1,1,1548892862,4096 predictor::https://www.googleadservices.com/pagead/conversion_async.js 1,1,1548892862,4096 predictor::https://static.ads-twitter.com/uwt.js 1,1,1548892862,4096 predictor::https://sjs.bizographics.com/insight.min.js 1,1,1548892862,4096 predictor::https://www.googleadservices.com/pagead/conversion.js 1,1,1548892862,4096 predictor::https://s.yimg.com/wi/ytc.js 1,1,1548892862,4096 predictor::https://b92.yahoo.co.jp/js/s_retargeting.js 1,1,1548892862,4096 predictor::https://pixel.mathtag.com/event/js?mt_id=1093895&mt_adid=113635&v1=&v2=&v3=&s1=&s2=&s3= 1,1,1548892862,4096 predictor::https://j.6sc.co/6si.min.js 1,1,1548892862,4096 predictor::https://s.amazon-adsystem.com/iui3?d=forester-did&ex-fargs=%3Fid%3D6396791d-b088-acd7-8c0d-874bb5501a83%26type%3D4%26m%3D1&ex-fch=416613&ex-src=https://www.dropbox.com/business&ex-hargs=v%3D1.0%3Bc%3D1472515310701%3Bp%3D6396791D-B088-ACD7-8C0D-874BB5501A83 1,1,1548892862,4096 predictor::https://connect.facebook.net/en_US/fbevents.js 1,1,1548892862,4096 predictor::https://tags.tiqcdn.com/utag/dropbox/main/prod/utag.js 1,1,1548892862,4096 predictor::https://px.ads.linkedin.com/collect/?time=1548892864254&pid=4373&url=https%3A%2F%2Fwww.google.com%2F&fmt=js&s=1 1,1,1548892862,4096 predictor::https://sp.analytics.yahoo.com/sp.pl?a=1000543649509&jsonp=YAHOO.ywa.I13N.handleJSONResponse&d=Thu%2C%2031%20Jan%202019%2000%3A01%3A04%20GMT&n=8&b=Dropbox&.yp=25979&f=https%3A%2F%2Fmarketing.dropbox.com%2Fbusiness%2Flanding-t61fl%3F_ad%3D278282541815%257C1t1%257Cc%26_camp%3D%26_kw%3Ddropbox%257Ce%26gclid%3DEAIaIQobChMI36nn3_OW4AIVg-DICh127QuuEAAYASAAEgIn3vD_BwE%26referrer%3Dhttps%253A%252F%252Fwww.google.com%252F&e=https%3A%2F%2Fwww.google.com%2F&enc=windows-1252&isIframe=1 1,1,1548892862,4096 predictor::https://b.6sc.co/v1/beacon/img.gif?token=da650ae7344c41dcc18fb657a062dcdd&svisitor=&visitor=4a8d9864-0bf6-4941-8a4f-820bf5d36734&session=20c4d7d2-2cfb-49dc-83dc-ddf3653bfde6&event=a_pageload&q=%7B%7D&isIframe=true&m=%7B%22description%22%3A%22%22%2C%22keywords%22%3A%22%22%2C%22title%22%3A%22Dropbox%22%7D&cb=92864280&r=https%3A%2F%2Fwww.google.com%2F&thirdParty=%7B%7D 1,1,1548892862,4096 predictor::https://sp.analytics.yahoo.com/sp.pl?a=10000&jsonp=YAHOO.ywa.I13N.handleJSONResponse&d=Thu%2C%2031%20Jan%202019%2000%3A01%3A04%20GMT&n=8&b=Dropbox&.yp=10030786&f=https%3A%2F%2Fmarketing.dropbox.com%2Fbusiness%2Flanding-t61fl%3F_ad%3D278282541815%257C1t1%257Cc%26_camp%3D%26_kw%3Ddropbox%257Ce%26gclid%3DEAIaIQobChMI36nn3_OW4AIVg-DICh127QuuEAAYASAAEgIn3vD_BwE%26referrer%3Dhttps%253A%252F%252Fwww.google.com%252F&e=https%3A%2F%2Fwww.google.com%2F&enc=windows-1252&isIframe=1 1,1,1548892862,4096 predictor::https://t.co/i/adsct?p_id=Twitter&p_user_id=0&txn_id=nvx41&events=%5B%5B%22pageview%22%2Cnull%5D%5D&tw_sale_amount=0&tw_order_quantity=0&tw_iframe_status=1&tw_document_referrer=https%3A%2F%2Fwww.google.com%2F 1,1,1548892862,4096 predictor::https://bat.bing.com/action/0?ti=4012642&Ver=2 1,1,1548892862,4096 predictor::https://bat.bing.com/bat.js 1,1,1548892862,4096 predictor::https://b92.yahoo.co.jp/search/?p=0GPI4UYVBZ&label=&ref=https%3A%2F%2Fwww.google.com%2F&rref=&pt=&item=&cat=&price=&quantity=&r=1548892866.034821&pvid=ourkpxjfs2jrjutkoz&req=1 1,1,1548892862,4096 predictor::https://4526719.fls.doubleclick.net/activityi;src=4526719;type=invmedia;cat=jetwafrz;dc_lat=;dc_rdid=;tag_for_child_directed_treatment=;ord=1 1,1,1548892862,4096 predictor::https://connect.facebook.net/signals/config/1559459634097838?v=2.8.37&r=stable 1,1,1548892862,4096 predictor::https://pixel.mathtag.com/misc/img?mm_bnc&bcdv=0 1,1,1548892862,4096 predictor::https://tags.tiqcdn.com/utag/dropbox/main/prod/utag.30.js?utv=ut4.46.201812182103 1,1,1548892862,4096 predictor::https://tags.tiqcdn.com/utag/dropbox/main/prod/utag.18.js?utv=ut4.46.201812182103 1,1,1548892862,4096 predictor::https://tags.tiqcdn.com/utag/dropbox/main/prod/utag.23.js?utv=ut4.46.201812182103 1,1,1548892862,4096 predictor::https://tags.tiqcdn.com/utag/dropbox/main/prod/utag.42.js?utv=ut4.46.201901302204 1,1,1548892862,4096 predictor::https://tags.tiqcdn.com/utag/dropbox/main/prod/utag.45.js?utv=ut4.46.201812182103 1,1,1548892862,4096 predictor::https://tags.tiqcdn.com/utag/dropbox/main/prod/utag.48.js?utv=ut4.46.201811062256 1,1,1548892862,4096 predictor::https://tags.tiqcdn.com/utag/dropbox/main/prod/utag.73.js?utv=ut4.46.201901091953 1,1,1548892862,4096 predictor::https://tags.tiqcdn.com/utag/dropbox/main/prod/utag.97.js?utv=ut4.46.201901091953 1,1,1548892862,4096 predictor::https://tags.tiqcdn.com/utag/dropbox/main/prod/utag.116.js?utv=ut4.46.201901092041 1,1,1548892862,4096 predictor::https://tags.tiqcdn.com/utag/dropbox/main/prod/utag.123.js?utv=ut4.46.201901242214 1,1,1548892862,4096 predictor::https://snap.licdn.com/li.lms-analytics/insight.min.js 1,1,1548892862,4096 predictor::https://www.googletagmanager.com/gtag/js?id=UA-279179-2 1,1,1548892862,4096 predictor::https://www.facebook.com/tr/?id=1559459634097838&ev=PageView&dl=https%3A%2F%2Fmarketing.dropbox.com%2Fbusiness%2Flanding-t61fl%3F_ad%3D278282541815%257C1t1%257Cc%26_camp%3D%26_kw%3Ddropbox%257Ce%26gclid%3DEAIaIQobChMI36nn3_OW4AIVg-DICh127QuuEAAYASAAEgIn3vD_BwE%26referrer%3Dhttps%253A%252F%252Fwww.google.com%252F&rl=https%3A%2F%2Fwww.google.com%2F&if=true&ts=1548892866992&sw=1280&sh=800&v=2.8.37&r=stable&ec=0&o=30&fbp=fb.1.1548892866990.1052889429&it=1548892866674&coo=false 1,1,1548892862,4096 predictor::https://connect.facebook.net/signals/config/442728829472826?v=2.8.37&r=stable 1,1,1548892862,4096 predictor::https://bat.bing.com/action/0?ti=4012642&Ver=2&mid=67dd854f-efd0-079e-b39b-89594c2c5098&pi=0&lg=en-US&sw=1280&sh=800&sc=24&tl=Dropbox&r=&p=https%3A%2F%2Fwww.google.com%2F&lt=405&evt=pageLoad&ifm=1&msclkid=N&rn=317361 1,1,1548892862,4096 predictor::https://secure-ds.serving-sys.com/SemiCachedScripts/ebOneTag.js 1,1,1548892862,4096 predictor::https://cdn.krxd.net/controltag/tpxf4nq03.js 1,1,1548892862,4096 predictor::https://tags.tiqcdn.com/utag/tiqapp/utag.v.js?a=dropbox/main/201901302205&cb=1548892867160 1,1,1548892862,4096 predictor::https://www.facebook.com/tr/?id=442728829472826&ev=PageView&dl=https%3A%2F%2Fmarketing.dropbox.com%2Fbusiness%2Flanding-t61fl%3F_ad%3D278282541815%257C1t1%257Cc%26_camp%3D%26_kw%3Ddropbox%257Ce%26gclid%3DEAIaIQobChMI36nn3_OW4AIVg-DICh127QuuEAAYASAAEgIn3vD_BwE%26referrer%3Dhttps%253A%252F%252Fwww.google.com%252F&rl=https%3A%2F%2Fwww.google.com%2F&if=true&ts=1548892867183&sw=1280&sh=800&v=2.8.37&r=stable&a=tmgoogletagmanager&ec=0&o=30&it=1548892866674&coo=false 1,1,1548892862,4096 predictor::https://connect.facebook.net/signals/config/247157135986338?v=2.8.37&r=stable 1,1,1548892862,4096 predictor::https://t.co/i/adsct?p_id=Twitter&p_user_id=0&txn_id=nvx41&events=%5B%5B%22pageview%22%2C%7B%7D%5D%5D&tw_sale_amount=0&tw_order_quantity=0&tw_iframe_status=1&tw_document_referrer=https%3A%2F%2Fwww.google.com%2F 1,1,1548892862,4096 predictor::https://www.google-analytics.com/analytics.js 1,1,1548892862,4096 predictor::https://www.facebook.com/tr/?id=247157135986338&ev=PageView&dl=https%3A%2F%2Fmarketing.dropbox.com%2Fbusiness%2Flanding-t61fl%3F_ad%3D278282541815%257C1t1%257Cc%26_camp%3D%26_kw%3Ddropbox%257Ce%26gclid%3DEAIaIQobChMI36nn3_OW4AIVg-DICh127QuuEAAYASAAEgIn3vD_BwE%26referrer%3Dhttps%253A%252F%252Fwww.google.com%252F&rl=https%3A%2F%2Fwww.google.com%2F&if=true&ts=1548892868128&sw=1280&sh=800&v=2.8.37&r=stable&ec=0&o=30&fbp=fb.1.1548892866990.1052889429&it=1548892866674&coo=false 1,1,1548892862,4096 predictor::https://connect.facebook.net/signals/config/329181751193634?v=2.8.37&r=stable 1,1,1548892862,4096 predictor::https://cdn.krxd.net/ctjs/controltag.js.09ebc571a022d419934530eaf14c8a78 1,1,1548892862,4096 predictor::https://www.facebook.com/tr/?id=329181751193634&ev=PageView&dl=https%3A%2F%2Fmarketing.dropbox.com%2Fbusiness%2Flanding-t61fl%3F_ad%3D278282541815%257C1t1%257Cc%26_camp%3D%26_kw%3Ddropbox%257Ce%26gclid%3DEAIaIQobChMI36nn3_OW4AIVg-DICh127QuuEAAYASAAEgIn3vD_BwE%26referrer%3Dhttps%253A%252F%252Fwww.google.com%252F&rl=https%3A%2F%2Fwww.google.com%2F&if=true&ts=1548892868368&sw=1280&sh=800&v=2.8.37&r=stable&ec=0&o=30&fbp=fb.1.1548892866990.1052889429&it=1548892866674&coo=false 1,1,1548892862,4096 predictor::https://www.google.com/ads/ga-audiences?t=sr&aip=1&_r=4&slf_rd=1&v=1&_v=j73&tid=UA-279179-2&cid=638879328.1548892867&jid=728373161&_u=oEBAAcABAAAAgC~&z=873475904 1,1,1548892862,4096 predictor::https://consumer.krxd.net/consent/get/7fe1f424-c09d-4781-af13-2352d2ee4229?idt=device&dt=kxcookie&callback=Krux.ns.dropboxmain.kxjsonp_consent_get_0 1,1,1548892862,4096 predictor::https://beacon.krxd.net/optout_check?callback=Krux.ns.dropboxmain.kxjsonp_optOutCheck 1,1,1548892862,4096 predictor::https://cdn.krxd.net/userdata/get?pub=7fe1f424-c09d-4781-af13-2352d2ee4229&kxfp=cc6de9fb4eee8f9119533daee84407a09f3e8a21&technographics=1&callback=Krux.ns.dropboxmain.kxjsonp_userdata 1,1,1548892862,4096   &ä

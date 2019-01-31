@@ -1,0 +1,453 @@
+<html>
+  <head>
+    <title>Dropbox SnapEngage Chats</title>
+  </head>
+  <body style="background-color: transparent">
+    <script type="text/javascript">
+
+      (function() {
+        var TARGET_URL = "https://www.dropbox.com";
+        var PROACTIVE_ID = "d5c1efed-d0ef-4fca-8c7d-faff398ad272";
+        var REACTIVE_ID = "aac361ec-f445-43be-a7c8-a6d25df31ced";
+        var SUPPORT_ID;
+        var legacyWidgetId = 'SnapABug_WP';
+        // the chat widget itself
+        var dsWidgetId = 'designstudio';
+        // used if an agent is connected and has a profile pic
+        var customButtonId = 'designstudio-minimize';
+        // fallback if no agent is available or has no profile pic
+        var stdButtonId = 'designstudio-button';
+
+        var buttonIds = [customButtonId, stdButtonId];
+        var childIds = [dsWidgetId].concat(buttonIds);
+
+        (function polyfill() {
+          Array.prototype.map = Array.prototype.map || function(fn) {
+            var rv = [];
+
+            for(var i=0, l=this.length; i<l; i++) {
+              rv.push(fn(this[i]));
+            }
+            return rv;
+          };
+          Array.prototype.find = Array.prototype.find || function(fn) {
+            for(var i=0, l=this.length; i<l; i++) {
+              if (fn(this[i])) {
+                return this[i];
+              }
+            }
+            return undefined;
+          };
+        })();
+
+        function initializeVisitorInfo(data) {
+          // Please see README
+          window.chatData = {
+            'FirstName': data.FirstName,
+            'LastName': data.LastName,
+            'Email': data.Email,
+            'SessionID': data.SessionID,
+            'Country': data.Country,
+            'MktoInfo': data.MktoInfo,
+            'Pricing': data.pricing,
+            'user_id': data.user_id,
+            'proactiveMessage': '',
+            'proactiveAgentName': '',
+            'visitorFirstTimeVisitor': '',
+            'visitorAmountOfPreviousChats': '',
+            'visitorAmountOfPagesVisited': '',
+            'visitorTimeOnSite': '',
+            'visitorTimeOnPage': '',
+            'pageLoadTs': data.pageLoadTs,
+            'chatHmac': data.chatHmac,
+            'ncct': data.ncct,
+            'serviceTier': data.serviceTier,
+            'tags': data.tags,
+            'phoneSupportForPlusUsers': data.phoneSupportForPlusUsers,
+            'supportExperimentShowOnboardingNumber': data.supportExperimentShowOnboardingNumber,
+            'supportExperimentHideEmailOption': data.supportExperimentHideEmailOption,
+            'supportExperimentBasic36HourSla': data.supportExperimentBasic36HourSla,
+            'phoneSupportForProfessionalUsers': data.phoneSupportForProfessionalUsers,
+            'supportExperimentProfessionalPhoneSupportedLanguages': data.supportExperimentProfessionalPhoneSupportedLanguages,
+          };
+        }
+
+        function checkChatStatus(widget_id, final_widget_id) {
+          SnapEngage.setWidgetId(widget_id);
+          SnapEngage.getAgentStatusAsync(function(online) {
+            sendMessage('UpdateChatStatus', {'online': online})
+          });
+          if (final_widget_id) {
+            SnapEngage.setWidgetId(final_widget_id);
+          }
+        }
+
+        function updateAdditionalVisitorInfo(agent, msg) {
+          var data = window.chatData;
+          data.proactiveMessage = msg;
+          data.proactiveAgentName = agent;
+          data.visitorFirstTimeVisitor = SnapABugChat.getVisitorIsFirstTimeVisiting();
+          data.visitorAmountOfPreviousChats = SnapABugChat.getVisitorNumberOfPreviousChats();
+          data.visitorAmountOfPagesVisited = SnapABugChat.getVisitorNumberOfPagesVisited();
+          data.visitorTimeOnSite = SnapABugChat.getVisitorTimeOnSite();
+          data.visitorTimeOnPage = SnapABugChat.getVisitorTimeOnPage();
+        };
+
+        function getTargetURL() {
+          return TARGET_URL;
+        }
+
+        function validOriginURL(url) {
+          return url === getTargetURL();
+        }
+
+        function startReactiveChat() {
+          // Override styles
+          createStyleOverrides();
+          SnapEngage.setWidgetId(REACTIVE_ID);
+          SnapEngage.setStartChat('');
+          SnapEngage.startLink();
+        }
+
+        function startSupportChat(support_widget_id) {
+          // Override styles
+          createStyleOverrides();
+          chatId = support_widget_id || SUPPORT_ID;
+          SnapEngage.setWidgetId(chatId);
+          SnapEngage.setUserEmail(chatData.Email, true);
+          SnapEngage.startLink();
+        }
+
+        function endChat() {
+          SnapABug.closeForm();
+        }
+
+        function getMutationObserver() {
+          var mutationObserverFn = null;
+          ['', 'WebKit', 'Moz', 'O', 'Ms'].forEach(function(prefix) {
+            if (this.hasOwnProperty(prefix + 'MutationObserver')) {
+              mutationObserverFn = this[prefix + 'MutationObserver'];
+            }
+          }, window);
+          return mutationObserverFn;
+        }
+
+        function getVisible(ids) {
+          return ids.map(function(id) {
+            var elem = document.getElementById(id);
+            if (!!elem) {
+              var bounds = elem.getBoundingClientRect();
+              return (
+                  elem.style.display !== "none" &&
+                  (bounds.top + elem.offsetHeight) >= 0 &&
+                  (bounds.left + elem.offsetWidth) >= 0 &&
+                  bounds.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
+                  bounds.right <= (window.innerWidth || document.documentElement.clientWidth)
+              ) ? elem : null;
+            }
+            return null;
+          }).find(function(e) { return !!e});
+        }
+
+        function minimizeChat(elem) {
+          var clientRect = elem.getBoundingClientRect();
+          var rect = {width: clientRect.width, height: clientRect.height};
+          sendMessage('Minimize', {rect: rect});
+        }
+
+        function maximizeChat() {
+          var elem = document.getElementById(dsWidgetId)
+          if (elem) {
+            window.setTimeout(function() {
+              // DS widget is dyn. sized, give time to expand
+              var clientRect = elem.getBoundingClientRect();
+              var rect = {width: clientRect.width, height: clientRect.height};
+              sendMessage('Maximize', {rect: rect});
+            }, 0);
+          }
+          sendMessage('Maximize', {});
+        }
+
+        function resizeChatOnPageLoad() {
+          var visibleElem = getVisible(childIds.concat([legacyWidgetId]));
+          if (!!visibleElem) {
+            var id = visibleElem.id;
+            (id === dsWidgetId || id === legacyWidgetId) ? maximizeChat() : minimizeChat(visibleElem);
+          }
+          else if (!!getVisible(['SnapABug_Button'])) {
+            sendMessage('Close', {});
+          }
+        }
+
+        function updateHmac(data) {
+          var msg = "Visitor ID refreshed. Click here to re-authenticate if needed: ";
+          var url = "https://cc.pp.dropbox.com/app/hmac_verification?user_id=" + data.user_id + "&page_load_ts="+ data.pageLoadTs + "&chat_hmac=" + data.chatHmac;
+          SnapEngage.sendTextToChat(msg + url);
+        }
+
+        function createSnapEngageScript(data) {
+          initializeVisitorInfo(data.chatData);
+
+          chatId = data.chatId
+          if (!chatId){
+            chatId = PROACTIVE_ID
+          }
+
+          var se = document.createElement('script');
+          se.type = 'text/javascript';
+          se.async = true;
+          se.src = '//storage.googleapis.com/code.snapengage.com/js/'+chatId+'.js';
+          var done = false;
+          se.onload = se.onreadystatechange = function() {
+            if (!done && (!this.readyState || this.readyState === 'loaded' || this.readyState === 'complete')) {
+              done = true;
+              SnapABug.disableLightbox();
+
+              SnapEngage.setUserEmail(data.chatData.Email);
+
+              if (data.chatData.tags) {
+                SnapEngage.setTags(data.chatData.tags);
+              }
+
+              // Override styles
+              createStyleOverrides();
+
+              SnapEngage.setCallback('Open', function() {
+                sendMessage('Open', {'chatId' : SnapEngage.getWidgetId()});
+              });
+
+              SnapEngage.setCallback('OpenProactive', function(agent, msg) {
+                updateAdditionalVisitorInfo(agent, msg);
+                sendMessage('OpenProactive', {'agent': agent, 'msg': msg});
+              });
+
+              SnapEngage.setCallback('Close', function(type, agent_status) {
+                sendMessage('Close', {'type': type, 'agent_status': agent_status});
+              });
+
+              SnapEngage.setCallback('StartChat', function(email, msg, type) {
+                sendMessage('StartChat', {'email': email, 'msg': msg, 'type': type, 'chatId': SnapEngage.getWidgetId()});
+              });
+
+              SnapEngage.setCallback('ChatMessageReceived', function(agent, msg) {
+                sendMessage('ChatMessageReceived', {'agent': agent, 'msg': msg});
+              });
+
+              // This is a hack since there is no refresh event. When a user refreshes the page
+              // SnapEngage will automatically detect this and reopen. Since we are in an
+              // iframe we need to bubble this back up to the parent so we can open the iframe.
+              // This is brittle since it relies on the SnapABug_WP id which could change in the
+              // future.
+              // This logic can't be used for Design Studio as there's always either the widget
+              // or the minimized button visible, therefore we need to maintain our own state
+              if (
+                document.getElementById(legacyWidgetId) &&
+                document.getElementById(legacyWidgetId).style.display !== 'none'
+              ) {
+                sendMessage('Open', {'chatId' : SnapEngage.getWidgetId()});
+              }
+
+              // Does this browser support mutation observation?
+              var mutationObserverFn = getMutationObserver();
+
+              if (mutationObserverFn) {
+                function endProactiveChat() {
+                  sendMessage('EndProactiveChat', {'chatId' : SnapEngage.getWidgetId()});
+                }
+
+                var target = document.getElementById(legacyWidgetId);
+                if (target) {
+                  // Create an observer to check if the iFrame is hidden (display: none)
+                  // This is workaround for SnapEngage not having a callback for proactive chats
+                  // ended without communication to the user. Because of this, SnapEngage will hide
+                  // its chat window but the iFrame persists assuming the full height and width of the
+                  // hidden children causing an overlay issue for users
+                  var legacyObserver = new mutationObserverFn(function(mutations) {
+                    mutations.forEach(function(mutation) {
+                      if (target.style.display === "none") {
+                        endProactiveChat();
+                      }
+                    });
+                  });
+                  // Pass in the target node, as well as the observer options
+                  legacyObserver.observe(target, {
+                    attributes: true,
+                    attributeFilter: ['style'],
+                  });
+                }
+                else {
+                  var dsObserver = new mutationObserverFn(function(mutations) {
+                    mutations.forEach(function(m) {
+                      var style = m.target.style;
+                      switch(m.target.id) {
+                        case dsWidgetId:
+                          if (m.attributeName !== 'style') {
+                            break;
+                          }
+                          // chat widget was closed/minimized/maximized
+                          if (style.display === "none") {
+                            window.setTimeout(function() {
+                              var visibleButton = getVisible(buttonIds);
+                              if (!!visibleButton) {
+                                minimizeChat(visibleButton);
+                              }
+                              else {
+                                endProactiveChat();
+                              }
+                            }, 0);
+                          }
+                          else {
+                            maximizeChat();
+                          }
+                          break;
+                        default:
+                          // minimize/maximize is taken care of via widget id
+                          // here we need to handle changes to the children of minimized button if visible (e.g. agent replied)
+                          var visibleButton = getVisible(buttonIds);
+                          !!visibleButton && minimizeChat(visibleButton);
+                          break;
+                      }
+                    });
+                  });
+
+                  // we need to observe the parent as the child gets removed (when no agent is connected)
+                  dsObserver.observe(document.body, {
+                    attributes: true,
+                    childList: true,
+                    subtree: true,
+                  });
+                }
+              }
+              // This environment does not support mutation observer...
+
+              switch (chatId) {
+                case PROACTIVE_ID:
+                  checkChatStatus(REACTIVE_ID, PROACTIVE_ID);
+                  SnapEngage.allowProactiveChat(data.allowProactiveChat);
+                  break;
+
+                default:
+                  SUPPORT_ID = chatId;
+                  checkChatStatus(SUPPORT_ID);
+                  break;
+              }
+
+              sendMessage('SnapEngageInitialized', {});
+            }
+          };
+          var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(se, s);
+        }
+
+        // This function is a temporary fix to display a scroll bar on chrome
+        // SE doesnâ€™t display the scroll bar, which causes confusion for users
+        // If SE removes the scroll bar hiding style then this function can be removed
+        function createStyleOverrides() {
+          var dsIframe = window.frames['designstudio-iframe'];
+          if (!dsIframe) {
+            return;
+          }
+          var styleElem = document.createElement('style');
+          var styles = document.createTextNode('.messages-content::-webkit-scrollbar {display: block; margin-right: 4px; background-color: #FAFAFA; width: 12px !important;}' +
+            '.messages-content::-webkit-scrollbar-thumb {border-radius: 10px; background: #C2C2C2; border-right: 3px solid #FAFAFA;}' +
+            '.messages-content::-webkit-scrollbar-thumb:hover { background: #7A7A7A;}' +
+            // styles to avoid collapsing on iOS
+            '#main-mobile.ios-collapse { max-height: none; max-width: none}');
+          styleElem.appendChild(styles);
+          // IE doesn't support contentDocument as equivalent we use document
+          var contentDoc = dsIframe.contentDocument || dsIframe.document;
+          var head = contentDoc.querySelector('head');
+
+          if (head) {
+            head.appendChild(styleElem);
+          }
+        }
+
+        function receiveMessage(event) {
+          if (!validOriginURL(event.origin)) {
+            return;
+          }
+
+          var data = event.data;
+          switch (data.message_type) {
+            case "checkChatStatus":
+              initializeVisitorInfo(data.chatData);
+              if (data.isSupport) {
+                checkChatStatus(SUPPORT_ID);
+              } else {
+                checkChatStatus(REACTIVE_ID, PROACTIVE_ID);
+              }
+              break;
+
+            case "AllowProactiveChat":
+              SnapEngage.allowProactiveChat(data.allowProactiveChat);
+              break;
+
+            case "StartChat":
+              initializeVisitorInfo(data.chatData);
+              startReactiveChat();
+              break;
+
+            case "UpdateChatData":
+              initializeVisitorInfo(data.chatData);
+              break;
+
+            case "startSupportChat":
+              initializeVisitorInfo(data.chatData);
+              if (!!data.support_widget_id) {
+                  startSupportChat(data.support_widget_id);
+              } else {
+                  startSupportChat();
+              }
+              break;
+
+            case "EndChat":
+              endChat();
+              break;
+
+            case "checkResize":
+              resizeChatOnPageLoad();
+              break;
+
+            case "createSnapEngageScript":
+              createSnapEngageScript(data);
+              break;
+
+            case "updateHmac":
+              updateHmac(data.chatData);
+              break;
+          }
+        }
+
+        function sendMessage(message_type, data) {
+          data.message_type = message_type;
+          parent.postMessage(data, getTargetURL());
+        }
+
+        window.addEventListener('message', receiveMessage, false);
+      })();
+    </script>
+  </body>
+</html>
+ðÁóÏq.      \R:¿\R:Â?ýÿá\Y§   ´    :https://snapengage.dropbox.com/business/landing-t61fl?_ad=278282541815%7C1t1%7Cc&_camp=&_kw=dropbox%7Ce&gclid=EAIaIQobChMI36nn3_OW4AIVg-DICh127QuuEAAYASAAEgIn3vD_BwE&tk=sem_b_goog necko:classified 1 strongly-framed 1 security-info FnhllAKWRHGAlo+ESXykKAAAAAAAAAAAwAAAAAAAAEaphjojH6pBabDSgSnsfLHeAAQAAgAAAAAAAAAAAAAAAAAAAAAB4vFIJp5wRkeyPxAQ9RJGKPqbqVvKO0mKuIl8ec8o/uhmCjImkVxP+7sgiYWmMt8FvcOXmlQiTNWFiWlrbpbqgwAAAAAAAAWhMIIFnTCCBIWgAwIBAgIQAnR+XJQ/9lrU+GOJ25VVsjANBgkqhkiG9w0BAQsFADBwMQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3d3cuZGlnaWNlcnQuY29tMS8wLQYDVQQDEyZEaWdpQ2VydCBTSEEyIEhpZ2ggQXNzdXJhbmNlIFNlcnZlciBDQTAeFw0xNjAzMTAwMDAwMDBaFw0xOTAzMTUxMjAwMDBaMIGHMQswCQYDVQQGEwJVUzETMBEGA1UECBMKQ2FsaWZvcm5pYTEWMBQGA1UEBxMNU2FuIEZyYW5jaXNjbzEVMBMGA1UEChMMRHJvcGJveCwgSW5jMRQwEgYDVQQLEwtEcm9wYm94IE9wczEeMBwGA1UEAxMVd3d3LmRieHNuYXBlbmdhZ2UuY29tMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuSjY9Kq66RCPPiFEpmsG8ZOWWI8pSxBq8WbIAfy67zCg0L+XLVwkmxbyAsjUaXbdc4soQSY3xGG01E4AW4DB12wrCVMmkk9hX8IBZQfDxlrl3FpKzzVro+TJAcfX1ufJ7pUAHHVcnRC5wvPCttBWVcAuLeqAfiG59A7zCa0SXgsNQUcmqwfLDik5BK+srEy7Fw9BnZQWhW7GMY47XpTcxGXsHgY7rTKFQ6URjKaSM8Q68xrl+veNDBuZxYvB2AMPHKfAECH+DfxeLXnNBgEEh5duJjwGwNN6WPVqVK0JcgFM7nRlg2e2cqzeTb++fTmtNWKpAm+hAFNeNMw2rYmO1wIDAQABo4ICGTCCAhUwHwYDVR0jBBgwFoAUUWj/kK8CB3U8zNllZGKiErhZcjswHQYDVR0OBBYEFDm8v5Keynrc8odQBMczHpmCGsk1MEsGA1UdEQREMEKCFXd3dy5kYnhzbmFwZW5nYWdlLmNvbYIRZGJ4c25hcGVuZ2FnZS5jb22CFnNuYXBlbmdhZ2UuZHJvcGJveC5jb20wDgYDVR0PAQH/BAQDAgWgMB0GA1UdJQQWMBQGCCsGAQUFBwMBBggrBgEFBQcDAjB1BgNVHR8EbjBsMDSgMqAwhi5odHRwOi8vY3JsMy5kaWdpY2VydC5jb20vc2hhMi1oYS1zZXJ2ZXItZzUuY3JsMDSgMqAwhi5odHRwOi8vY3JsNC5kaWdpY2VydC5jb20vc2hhMi1oYS1zZXJ2ZXItZzUuY3JsMEwGA1UdIARFMEMwNwYJYIZIAYb9bAEBMCowKAYIKwYBBQUHAgEWHGh0dHBzOi8vd3d3LmRpZ2ljZXJ0LmNvbS9DUFMwCAYGZ4EMAQICMIGDBggrBgEFBQcBAQR3MHUwJAYIKwYBBQUHMAGGGGh0dHA6Ly9vY3NwLmRpZ2ljZXJ0LmNvbTBNBggrBgEFBQcwAoZBaHR0cDovL2NhY2VydHMuZGlnaWNlcnQuY29tL0RpZ2lDZXJ0U0hBMkhpZ2hBc3N1cmFuY2VTZXJ2ZXJDQS5jcnQwDAYDVR0TAQH/BAIwADANBgkqhkiG9w0BAQsFAAOCAQEAgU7/7lXA0K9xCVjoxWumfHnmLW76Iw/2abg0o8LYXrPoaSy8lu1xnu1rQvQbeTuddMN3ogapaIJCH20eDsnvj5CPOydGoub/M9FYrcPZ3og1cr2s4PjTKPQr5XcineO7gJwD64uqWGEN39n/u+Jr169Bq0nIJI/fFTsDKV8DomSXtDmWcMjlVpFb7ntHMk9HbDQ6617uIXvgQz1ig94oSFQLVmPD6DoXRVUWwoGX3488cqT+HkEnIuH6mB0+VHtYNbMkICBywVh8UvbRk9iTNflFgTU9JfDzKdgP4qK5Z+YWEpD2TM+MZtSFoCLmON0qe2oDzRRn5FeRgDMhncxW6sAvAwMAAAAAAQEAAAAAAAAEUDI1NgAAABBSU0EtUEtDUzEtU0hBNTEyAZWfsWVlF0h/q5vYkTvlMZeudM2lzS9HP5b18Lf/9ixoAAAAA2YKMiaRXE/7uyCJhaYy3wW9w5eaVCJM1YWJaWtuluqDAAAAAAAABaEwggWdMIIEhaADAgECAhACdH5clD/2WtT4Y4nblVWyMA0GCSqGSIb3DQEBCwUAMHAxCzAJBgNVBAYTAlVTMRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5jb20xLzAtBgNVBAMTJkRpZ2lDZXJ0IFNIQTIgSGlnaCBBc3N1cmFuY2UgU2VydmVyIENBMB4XDTE2MDMxMDAwMDAwMFoXDTE5MDMxNTEyMDAwMFowgYcxCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpDYWxpZm9ybmlhMRYwFAYDVQQHEw1TYW4gRnJhbmNpc2NvMRUwEwYDVQQKEwxEcm9wYm94LCBJbmMxFDASBgNVBAsTC0Ryb3Bib3ggT3BzMR4wHAYDVQQDExV3d3cuZGJ4c25hcGVuZ2FnZS5jb20wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC5KNj0qrrpEI8+IUSmawbxk5ZYjylLEGrxZsgB/LrvMKDQv5ctXCSbFvICyNRpdt1ziyhBJjfEYbTUTgBbgMHXbCsJUyaST2FfwgFlB8PGWuXcWkrPNWuj5MkBx9fW58nulQAcdVydELnC88K20FZVwC4t6oB+Ibn0DvMJrRJeCw1BRyarB8sOKTkEr6ysTLsXD0GdlBaFbsYxjjtelNzEZeweBjutMoVDpRGMppIzxDrzGuX6940MG5nFi8HYAw8cp8AQIf4N/F4tec0GAQSHl24mPAbA03pY9WpUrQlyAUzudGWDZ7ZyrN5Nv759Oa01YqkCb6EAU140zDatiY7XAgMBAAGjggIZMIICFTAfBgNVHSMEGDAWgBRRaP+QrwIHdTzM2WVkYqISuFlyOzAdBgNVHQ4EFgQUOby/kp7Ketzyh1AExzMemYIayTUwSwYDVR0RBEQwQoIVd3d3LmRieHNuYXBlbmdhZ2UuY29tghFkYnhzbmFwZW5nYWdlLmNvbYIWc25hcGVuZ2FnZS5kcm9wYm94LmNvbTAOBgNVHQ8BAf8EBAMCBaAwHQYDVR0lBBYwFAYIKwYBBQUHAwEGCCsGAQUFBwMCMHUGA1UdHwRuMGwwNKAyoDCGLmh0dHA6Ly9jcmwzLmRpZ2ljZXJ0LmNvbS9zaGEyLWhhLXNlcnZlci1nNS5jcmwwNKAyoDCGLmh0dHA6Ly9jcmw0LmRpZ2ljZXJ0LmNvbS9zaGEyLWhhLXNlcnZlci1nNS5jcmwwTAYDVR0gBEUwQzA3BglghkgBhv1sAQEwKjAoBggrBgEFBQcCARYcaHR0cHM6Ly93d3cuZGlnaWNlcnQuY29tL0NQUzAIBgZngQwBAgIwgYMGCCsGAQUFBwEBBHcwdTAkBggrBgEFBQcwAYYYaHR0cDovL29jc3AuZGlnaWNlcnQuY29tME0GCCsGAQUFBzAChkFodHRwOi8vY2FjZXJ0cy5kaWdpY2VydC5jb20vRGlnaUNlcnRTSEEySGlnaEFzc3VyYW5jZVNlcnZlckNBLmNydDAMBgNVHRMBAf8EAjAAMA0GCSqGSIb3DQEBCwUAA4IBAQCBTv/uVcDQr3EJWOjFa6Z8eeYtbvojD/ZpuDSjwthes+hpLLyW7XGe7WtC9Bt5O510w3eiBqlogkIfbR4Oye+PkI87J0ai5v8z0Vitw9neiDVyvazg+NMo9CvldyKd47uAnAPri6pYYQ3f2f+74mvXr0GrScgkj98VOwMpXwOiZJe0OZZwyOVWkVvue0cyT0dsNDrrXu4he+BDPWKD3ihIVAtWY8PoOhdFVRbCgZffjzxypP4eQSci4fqYHT5Ue1g1syQgIHLBWHxS9tGT2JM1+UWBNT0l8PMp2A/iorln5hYSkPZMz4xm1IWgIuY43Sp7agPNFGfkV5GAMyGdzFbqZgoyJpFcT/u7IImFpjLfBb3Dl5pUIkzVhYlpa26W6oMAAAAAAAAEtTCCBLEwggOZoAMCAQICEATh56TcXPLzbcArQrhdFZ8wDQYJKoZIhvcNAQELBQAwbDELMAkGA1UEBhMCVVMxFTATBgNVBAoTDERpZ2lDZXJ0IEluYzEZMBcGA1UECxMQd3d3LmRpZ2ljZXJ0LmNvbTErMCkGA1UEAxMiRGlnaUNlcnQgSGlnaCBBc3N1cmFuY2UgRVYgUm9vdCBDQTAeFw0xMzEwMjIxMjAwMDBaFw0yODEwMjIxMjAwMDBaMHAxCzAJBgNVBAYTAlVTMRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5jb20xLzAtBgNVBAMTJkRpZ2lDZXJ0IFNIQTIgSGlnaCBBc3N1cmFuY2UgU2VydmVyIENBMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtuAvwiQGyG0EX9fvCmQGsn0iJmUWrkJAm87cn592Bz7DMFWHGblPlA5alB9VVrTCAiqv0JjuC0DXxNA7csgUnu+QsRGprtLIuEM62QsL1dWV9UCvyB3tTZxfV7eGUGiZ9Yra0scFH6iXydyksYKELcatpZzHGYKmhQ9eRFgqN4/9NfELCCcyWvW7i56kvVHQJ+LdO0IzowUoxLsozJqsKyMNeMZ75l5xt0o+CPuBtxYWoZ0jEk3l15IIrHWknLrNF7IeRDVlf1MlOdEcCppjGxmSdGgKN8LCUkjLOVqituFdwd2gILghopMmbxRKIUHH7W2b8kgv8wP1omiSUy9e4wIDAQABo4IBSTCCAUUwEgYDVR0TAQH/BAgwBgEB/wIBADAOBgNVHQ8BAf8EBAMCAYYwHQYDVR0lBBYwFAYIKwYBBQUHAwEGCCsGAQUFBwMCMDQGCCsGAQUFBwEBBCgwJjAkBggrBgEFBQcwAYYYaHR0cDovL29jc3AuZGlnaWNlcnQuY29tMEsGA1UdHwREMEIwQKA+oDyGOmh0dHA6Ly9jcmw0LmRpZ2ljZXJ0LmNvbS9EaWdpQ2VydEhpZ2hBc3N1cmFuY2VFVlJvb3RDQS5jcmwwPQYDVR0gBDYwNDAyBgRVHSAAMCowKAYIKwYBBQUHAgEWHGh0dHBzOi8vd3d3LmRpZ2ljZXJ0LmNvbS9DUFMwHQYDVR0OBBYEFFFo/5CvAgd1PMzZZWRiohK4WXI7MB8GA1UdIwQYMBaAFLE+w2kD+L9HAdSYJhoIAu9jZCvDMA0GCSqGSIb3DQEBCwUAA4IBAQAYipWJA+Zt31z8HWjqSo+D1lEvjWtEFp6sY/XSbmyEmYuqgXGEW+00TrC3eZIpzC2AavCOIOF5pP4DRxPq9YbKWXF99ASWa9NZWD3+0zElXBg4hKPmn4L9jFuYMU7NeJ4a/YXLSaryJ4uZcvw+qtVBC9rVNqG/HG5HSX9e2Uh8A9n9i0mgmCZCQOvWkhGkZApXVMT1HdYCXmus7sSAmhJy+laT1/+/MIUGML8Lf07/VwWdJO2Fwyv7pnWorC0W7315J7Lrwp0LB+qqhdMBoyAoQVlDKNKB46r27Hs7d7ZAYoAFQUUB7xcGPt7AM5tn02EucofkafwSAFdAHnD1Hsm0ZgoyJpFcT/u7IImFpjLfBb3Dl5pUIkzVhYlpa26W6oMAAAAAAAADyTCCA8UwggKtoAMCAQICEAKsXCZqC0Cbjwt58q5GJXcwDQYJKoZIhvcNAQEFBQAwbDELMAkGA1UEBhMCVVMxFTATBgNVBAoTDERpZ2lDZXJ0IEluYzEZMBcGA1UECxMQd3d3LmRpZ2ljZXJ0LmNvbTErMCkGA1UEAxMiRGlnaUNlcnQgSGlnaCBBc3N1cmFuY2UgRVYgUm9vdCBDQTAeFw0wNjExMTAwMDAwMDBaFw0zMTExMTAwMDAwMDBaMGwxCzAJBgNVBAYTAlVTMRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5jb20xKzApBgNVBAMTIkRpZ2lDZXJ0IEhpZ2ggQXNzdXJhbmNlIEVWIFJvb3QgQ0EwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDGzOVz5vvUu+UtLTKm3+WBP8nNJUm2cSrD1ZQ0Z6IKHLBfaaZAscS3so/QmKSpQVk609yU1jzbdDikSsxNJYL3SqVTEjju80ltcZF+Y7arpl/DpIT4T2JRvvjF7Ns4kuMG5QiRDMQoQVX7y1qJFX5x6DW/TXIJPb46OFBbdzEbjbPHJEWap6xtABRaBLe6E+tRCphBQSJOZWGHgUFQpnlcid4ZSlfVLuZdHFMsfpjNGgYWpGhz0DQEE1yhcdNafFXbXmThN4cwVgTlEbQpgBLxeTmIogIRfCdmt4i3ePLKCqg4qwpkwr9mXZWEwaElHoddGlALIBLMQbtuC1E4uEvLAgMBAAGjYzBhMA4GA1UdDwEB/wQEAwIBhjAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBSxPsNpA/i/RwHUmCYaCALvY2QrwzAfBgNVHSMEGDAWgBSxPsNpA/i/RwHUmCYaCALvY2QrwzANBgkqhkiG9w0BAQUFAAOCAQEAHBoGl9zXnJ88iGYGCFch2yFH+Cpnqr8YMnZAEFfBivN62RFljjX6nvxFtZ7ZTDFLuJHoQyyOs3jO2+NTeXHW5SGUAdpVh5okZPaKZszenDfNqDSxaZsjyJ54IitwQ+NVRzFhGe9YxYUvTjD2oDEWI8jn4mUWM8u/GhugPfjKXosxi2AIiS0MBlxSt8T5CpjRFV+fEr58NmM4vUSkf+QmKwrEl2kN6YziwBBXuMh2EpFV8khp2LwqAlsPRNQgMdv0unAmXZBgnrxLFwkvtMseQ2jJByfB0lz36iG5aBKcPJy/nvyAXJtjzexHqiUnZ6A38wCCfVTXqfjpLhOjd+gfSgAA request-method GET response-head HTTP/1.1 200 OK
+Content-Type: text/html
+Content-Length: 17138
+Last-Modified: Wed, 05 Dec 2018 15:59:26 GMT
+Server: AmazonS3
+Date: Thu, 31 Jan 2019 01:43:39 GMT
+ETag: "b52c18177a95f41437a6693ce6ed78ac"
+Age: 855
+X-Cache: Error from cloudfront
+Via: 1.1 86cbb00f1764c01bb52636b360589754.cloudfront.net (CloudFront)
+X-Amz-Cf-Id: 5dGDYoWMFTzeO8ixLJS1gIo7OQaPCHfsoAwM7w2zDGAEgN_1NfB1sg==
+ original-response-headers Content-Type: text/html
+Content-Length: 17138
+Connection: keep-alive
+Last-Modified: Wed, 05 Dec 2018 15:59:26 GMT
+Server: AmazonS3
+Date: Thu, 31 Jan 2019 01:43:39 GMT
+ETag: "b52c18177a95f41437a6693ce6ed78ac"
+Age: 855
+X-Cache: Error from cloudfront
+Via: 1.1 86cbb00f1764c01bb52636b360589754.cloudfront.net (CloudFront)
+X-Amz-Cf-Id: 5dGDYoWMFTzeO8ixLJS1gIo7OQaPCHfsoAwM7w2zDGAEgN_1NfB1sg==
+ uncompressed-len 0 net-response-time-onstart 142 net-response-time-onstop 149 predictor::resource-count 4 predictor::https://storage.googleapis.com/code.snapengage.com/js/d5c1efed-d0ef-4fca-8c7d-faff398ad272.js 1,1,1548892863,4097 predictor::https://www.snapengage.com/chatjs/ServiceGetConfig?w=d5c1efed-d0ef-4fca-8c7d-faff398ad272 1,1,1548892863,4096 predictor::https://www.snapengage.com/chatjs/servicegetproactivegeodata?w=d5c1efed-d0ef-4fca-8c7d-faff398ad272 1,1,1548892863,4096 predictor::https://fonts.googleapis.com/css?family=Lato:400 1,1,1548892863,4096   Bò
